@@ -1,12 +1,76 @@
-name: runner-smoke
+name: nts3-public-baseline
 
 on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  hello:
+  untouched-dummy-genericfx:
     runs-on: ubuntu-latest
+    env:
+      SDK_SHA: e78b16c6068b1c30fc072f2aebb8da5eef6c005c
+      TARGET: platform/nts-3_kaoss/dummy-genericfx
+      TOOLCHAIN_DIR: tools/gcc/gcc-arm-none-eabi-10.3-2021.10
+
     steps:
-      - name: Hello
-        run: echo hello
+      - name: Fetch pinned official Korg SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upstream artifacts
+          git init upstream/logue-sdk
+          cd upstream/logue-sdk
+          git remote add origin https://github.com/korginc/logue-sdk.git
+          git fetch --depth 1 origin "$SDK_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SDK_SHA"
+          git submodule update --init --recursive
+          {
+            echo "sdk_commit=$(git rev-parse HEAD)"
+            echo "submodules:"
+            git submodule status --recursive
+          } | tee "$GITHUB_WORKSPACE/artifacts/source.txt"
+
+      - name: Install exact Korg-documented ARM toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream/logue-sdk
+          bash tools/gcc/get_gcc_10_3-2021_10_linux.sh
+          "$TOOLCHAIN_DIR/bin/arm-none-eabi-gcc" --version | tee "$GITHUB_WORKSPACE/artifacts/compiler.txt"
+
+      - name: Build untouched official dummy-genericfx
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "upstream/logue-sdk/$TARGET"
+          make clean
+          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build.log"
+          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/build.log"
+
+      - name: Record build products
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE/upstream/logue-sdk/$TARGET"
+          GCC="$GITHUB_WORKSPACE/upstream/logue-sdk/$TOOLCHAIN_DIR/bin"
+          cp "$SRC"/*.nts3unit artifacts/
+          cp "$SRC"/build/*.elf artifacts/
+          cp "$SRC"/build/*.bin artifacts/
+          "$GCC/arm-none-eabi-readelf" -h -S "$SRC"/build/*.elf > artifacts/elf.txt
+          (
+            cd artifacts
+            sha256sum *.nts3unit *.elf *.bin > sha256sums.txt
+          )
+
+      - name: Upload baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nts3-public-baseline-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
