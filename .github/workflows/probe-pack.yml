@@ -1,0 +1,126 @@
+name: nts3-m0-probe-pack
+
+on:
+  push:
+    paths:
+      - 'probe-pack/TRIGGER'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-probe-pack:
+    runs-on: ubuntu-latest
+    env:
+      SDK_SHA: e78b16c6068b1c30fc072f2aebb8da5eef6c005c
+      TOOLCHAIN_DIR: tools/gcc/gcc-arm-none-eabi-10.3-2021.10
+
+    steps:
+      - name: Checkout probe sources
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned official Korg SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upstream artifacts
+          git init upstream/logue-sdk
+          cd upstream/logue-sdk
+          git remote add origin https://github.com/korginc/logue-sdk.git
+          git fetch --depth 1 origin "$SDK_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SDK_SHA"
+          git submodule update --init --recursive
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/artifacts/sdk-commit.txt"
+          git submodule status --recursive | tee "$GITHUB_WORKSPACE/artifacts/submodules.txt"
+
+      - name: Install exact Korg-documented ARM toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream/logue-sdk
+          bash tools/gcc/get_gcc_10_3-2021_10_linux.sh
+          "$TOOLCHAIN_DIR/bin/arm-none-eabi-gcc" --version | tee "$GITHUB_WORKSPACE/artifacts/compiler.txt"
+
+      - name: Stage isolated probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$GITHUB_WORKSPACE/upstream/logue-sdk"
+          BASE="$SDK/platform/nts-3_kaoss/dummy-genericfx"
+          RAW="$SDK/platform/nts-3_kaoss/probe-raw"
+          CLOCK="$SDK/platform/nts-3_kaoss/probe-clock"
+
+          cp -a "$BASE" "$RAW"
+          cp "$GITHUB_WORKSPACE/probe-pack/raw/effect.h" "$RAW/effect.h"
+          cp "$GITHUB_WORKSPACE/probe-pack/raw/unit.cc" "$RAW/unit.cc"
+          cp "$GITHUB_WORKSPACE/probe-pack/raw/header.c" "$RAW/header.c"
+          cp "$GITHUB_WORKSPACE/probe-pack/raw/config.mk" "$RAW/config.mk"
+
+          cp -a "$BASE" "$CLOCK"
+          cp "$GITHUB_WORKSPACE/probe-pack/clock/effect.h" "$CLOCK/effect.h"
+          cp "$GITHUB_WORKSPACE/probe-pack/clock/header.c" "$CLOCK/header.c"
+          cp "$GITHUB_WORKSPACE/probe-pack/clock/config.mk" "$CLOCK/config.mk"
+
+      - name: Build official touch probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream/logue-sdk/platform/nts-3_kaoss/pluck
+          make clean
+          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/touch-build.log"
+          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/touch-build.log"
+
+      - name: Build raw-input pre-roll probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream/logue-sdk/platform/nts-3_kaoss/probe-raw
+          make clean
+          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/raw-build.log"
+          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/raw-build.log"
+
+      - name: Build clock probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream/logue-sdk/platform/nts-3_kaoss/probe-clock
+          make clean
+          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/clock-build.log"
+          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/clock-build.log"
+
+      - name: Collect products and hashes
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$GITHUB_WORKSPACE/upstream/logue-sdk/platform/nts-3_kaoss"
+
+          cp "$SDK/pluck"/*.nts3unit artifacts/
+          cp "$SDK/probe-raw"/*.nts3unit artifacts/
+          cp "$SDK/probe-clock"/*.nts3unit artifacts/
+
+          cp "$SDK/pluck"/build/*.elf artifacts/pluck.elf
+          cp "$SDK/probe-raw"/build/*.elf artifacts/probe_raw.elf
+          cp "$SDK/probe-clock"/build/*.elf artifacts/probe_clock.elf
+
+          cp "$SDK/pluck"/build/*.bin artifacts/pluck.bin
+          cp "$SDK/probe-raw"/build/*.bin artifacts/probe_raw.bin
+          cp "$SDK/probe-clock"/build/*.bin artifacts/probe_clock.bin
+
+          {
+            echo 'touch=official pinned Korg pluck example'
+            echo 'raw=1 second pre-touch playback from get_raw_input ring buffer'
+            echo 'clock=audible 4ppqn tick; click pitch derived from unit_set_tempo'
+          } > artifacts/probe-index.txt
+
+          (cd artifacts && sha256sum *.nts3unit *.elf *.bin > sha256sums.txt)
+
+      - name: Upload probe pack
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nts3-m0-probe-pack-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
