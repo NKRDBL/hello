@@ -1,4 +1,4 @@
-name: nts3-public-baseline
+name: nts3-probe-pack
 
 on:
   push:
@@ -8,14 +8,16 @@ permissions:
   contents: read
 
 jobs:
-  untouched-dummy-genericfx:
+  build-probes:
     runs-on: ubuntu-latest
     env:
       SDK_SHA: e78b16c6068b1c30fc072f2aebb8da5eef6c005c
-      TARGET: platform/nts-3_kaoss/dummy-genericfx
       TOOLCHAIN_DIR: tools/gcc/gcc-arm-none-eabi-10.3-2021.10
 
     steps:
+      - name: Checkout probe sources
+        uses: actions/checkout@v4
+
       - name: Fetch pinned official Korg SDK
         shell: bash
         run: |
@@ -42,35 +44,68 @@ jobs:
           bash tools/gcc/get_gcc_10_3-2021_10_linux.sh
           "$TOOLCHAIN_DIR/bin/arm-none-eabi-gcc" --version | tee "$GITHUB_WORKSPACE/artifacts/compiler.txt"
 
-      - name: Build untouched official dummy-genericfx
+      - name: Prepare isolated probes
         shell: bash
         run: |
           set -euo pipefail
-          cd "upstream/logue-sdk/$TARGET"
+          BASE="$GITHUB_WORKSPACE/upstream/logue-sdk/platform/nts-3_kaoss"
+          cp -a "$BASE/dummy-genericfx" "$BASE/probe-raw"
+          cp -a "$BASE/dummy-genericfx" "$BASE/probe-clock"
+          cp "$GITHUB_WORKSPACE"/probe-pack/raw/config.mk "$BASE/probe-raw/config.mk"
+          cp "$GITHUB_WORKSPACE"/probe-pack/raw/effect.h "$BASE/probe-raw/effect.h"
+          cp "$GITHUB_WORKSPACE"/probe-pack/raw/header.c "$BASE/probe-raw/header.c"
+          cp "$GITHUB_WORKSPACE"/probe-pack/raw/unit.cc "$BASE/probe-raw/unit.cc"
+          cp "$GITHUB_WORKSPACE"/probe-pack/clock/config.mk "$BASE/probe-clock/config.mk"
+          cp "$GITHUB_WORKSPACE"/probe-pack/clock/effect.h "$BASE/probe-clock/effect.h"
+          cp "$GITHUB_WORKSPACE"/probe-pack/clock/header.c "$BASE/probe-clock/header.c"
+          rm -rf "$BASE/probe-raw/build" "$BASE/probe-clock/build"
+
+      - name: Build touch probe (official pluck)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream/logue-sdk/platform/nts-3_kaoss/pluck
           make clean
-          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build.log"
-          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/build.log"
+          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/pluck-build.log"
+          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/pluck-build.log"
 
-      - name: Record build products
-        if: success()
+      - name: Build raw-input probe
         shell: bash
         run: |
           set -euo pipefail
-          SRC="$GITHUB_WORKSPACE/upstream/logue-sdk/$TARGET"
-          GCC="$GITHUB_WORKSPACE/upstream/logue-sdk/$TOOLCHAIN_DIR/bin"
-          cp "$SRC"/*.nts3unit artifacts/
-          cp "$SRC"/build/*.elf artifacts/
-          cp "$SRC"/build/*.bin artifacts/
-          "$GCC/arm-none-eabi-readelf" -h -S "$SRC"/build/*.elf > artifacts/elf.txt
-          (
-            cd artifacts
-            sha256sum *.nts3unit *.elf *.bin > sha256sums.txt
-          )
+          cd upstream/logue-sdk/platform/nts-3_kaoss/probe-raw
+          make clean
+          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/raw-build.log"
+          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/raw-build.log"
 
-      - name: Upload baseline evidence
+      - name: Build clock probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream/logue-sdk/platform/nts-3_kaoss/probe-clock
+          make clean
+          make 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/clock-build.log"
+          make install 2>&1 | tee -a "$GITHUB_WORKSPACE/artifacts/clock-build.log"
+
+      - name: Record products and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$GITHUB_WORKSPACE/upstream/logue-sdk/platform/nts-3_kaoss"
+          GCC="$GITHUB_WORKSPACE/upstream/logue-sdk/$TOOLCHAIN_DIR/bin"
+          cp "$BASE/pluck"/*.nts3unit artifacts/
+          cp "$BASE/probe-raw"/*.nts3unit artifacts/
+          cp "$BASE/probe-clock"/*.nts3unit artifacts/
+          cp "$BASE/pluck"/build/*.elf artifacts/
+          cp "$BASE/probe-raw"/build/*.elf artifacts/
+          cp "$BASE/probe-clock"/build/*.elf artifacts/
+          for f in artifacts/*.elf; do "$GCC/arm-none-eabi-readelf" -h "$f"; done > artifacts/elf-headers.txt
+          (cd artifacts && sha256sum *.nts3unit *.elf > sha256sums.txt)
+
+      - name: Upload probe pack
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nts3-public-baseline-${{ github.sha }}
+          name: nts3-probe-pack-${{ github.sha }}
           path: artifacts/
           if-no-files-found: warn
