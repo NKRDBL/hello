@@ -1,0 +1,12 @@
+name: runner-smoke
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hello
+        run: echo hello
