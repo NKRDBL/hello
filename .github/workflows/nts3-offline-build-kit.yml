@@ -1,0 +1,71 @@
+name: nts3-offline-build-kit
+
+on:
+  push:
+    paths:
+      - '.github/workflows/nts3-offline-build-kit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle-public-upstream:
+    runs-on: ubuntu-latest
+    env:
+      SDK_SHA: e78b16c6068b1c30fc072f2aebb8da5eef6c005c
+      CMSIS_SHA: f25cf2c15304ad872a5b9761651d3f57d6202906
+      GCC_ARCHIVE: gcc-arm-none-eabi-10.3-2021.10-x86_64-linux.tar.bz2
+      GCC_URL: https://developer.arm.com/-/media/Files/downloads/gnu-rm/10.3-2021.10/gcc-arm-none-eabi-10.3-2021.10-x86_64-linux.tar.bz2
+      GCC_SHA1: 3d7cc8285cafcd63f65f8b2576f4ca4affddf15b
+
+    steps:
+      - name: Checkout public harness
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned public Korg SDK and CMSIS only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upstream/logue-sdk offline/sdk/platform/ext
+          git init upstream/logue-sdk
+          git -C upstream/logue-sdk remote add origin https://github.com/korginc/logue-sdk.git
+          git -C upstream/logue-sdk fetch --depth 1 origin "$SDK_SHA"
+          git -C upstream/logue-sdk checkout --detach FETCH_HEAD
+          test "$(git -C upstream/logue-sdk rev-parse HEAD)" = "$SDK_SHA"
+          git -C upstream/logue-sdk submodule update --init platform/ext/CMSIS
+          test "$(git -C upstream/logue-sdk/platform/ext/CMSIS rev-parse HEAD)" = "$CMSIS_SHA"
+
+          cp -a upstream/logue-sdk/platform/nts-3_kaoss offline/sdk/platform/
+          cp -a upstream/logue-sdk/platform/ext/CMSIS offline/sdk/platform/ext/
+          rm -rf offline/sdk/platform/ext/CMSIS/.git
+
+          {
+            echo "sdk_commit=$SDK_SHA"
+            echo "cmsis_commit=$CMSIS_SHA"
+          } > offline/upstream.txt
+
+      - name: Download exact Korg-documented ARM GCC archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output "offline/$GCC_ARCHIVE" "$GCC_URL"
+          echo "$GCC_SHA1  offline/$GCC_ARCHIVE" | sha1sum --check --strict
+
+      - name: Pack SDK subset and record hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C offline -czf "offline/nts3-sdk-${SDK_SHA}.tar.gz" sdk
+          rm -rf offline/sdk
+          sha256sum offline/*.tar.* > offline/sha256sums.txt
+          ls -lh offline | tee offline/manifest.txt
+          cat offline/sha256sums.txt | tee -a offline/manifest.txt
+
+      - name: Upload public offline build kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: nts3-offline-build-kit-${{ github.sha }}
+          path: offline/
+          if-no-files-found: error
+          compression-level: 0
